@@ -72,6 +72,41 @@
   let currentNoteIdx = 0;
   let activeTab = "bills";
   let noteSaveTimer = null;
+  let decoyMode = false;
+
+  // ── Decoy passcode ────────────────────────────────────────────────────────
+  // "dobby" opens a harmless, fully local Notepad+Calculator only — no Bills
+  // tab, no network call at all (so there's nothing to fail or log even if
+  // offline), and its notes never touch the real Sheet. Checked before the
+  // real login, entirely client-side.
+  const DECOY_CODE = "dobby";
+  const DECOY_NOTES_KEY = "lbb_decoy_notes_v1";
+  function normalizeLocal(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+  function seedDecoyNotes() {
+    return [{ id: "decoy-1", pageOrder: 1, content: "Milk\nEggs\nBread\nButter\nCoffee\nWashing up liquid\nPasta\nTin tomatoes" }];
+  }
+  function loadDecoyNotes() {
+    try {
+      const raw = localStorage.getItem(DECOY_NOTES_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    const seeded = seedDecoyNotes();
+    saveDecoyNotes(seeded);
+    return seeded;
+  }
+  function saveDecoyNotes(notes) { try { localStorage.setItem(DECOY_NOTES_KEY, JSON.stringify(notes)); } catch (e) {} }
+
+  function enterDecoyMode() {
+    decoyMode = true;
+    document.getElementById("gate-screen").style.display = "none";
+    document.getElementById("app").style.display = "";
+    document.querySelector('.tab-btn[data-tab="bills"]').style.display = "none";
+    document.getElementById("queue-note").style.display = "none";
+    switchTab("notepad");
+    currentNoteIdx = 0;
+    allNotes = loadDecoyNotes();
+    renderNotepad();
+  }
 
   document.title = CFG.TITLE || "lileboomboom";
 
@@ -135,6 +170,12 @@
     const code = input.value;
     input.value = "";
     msg.textContent = "";
+
+    if (normalizeLocal(code) === DECOY_CODE) {
+      enterDecoyMode();
+      return;
+    }
+
     try {
       await LBBAPI.login(code);
     } catch (err) {
@@ -142,8 +183,11 @@
       input.focus();
       return;
     }
+    decoyMode = false;
     document.getElementById("gate-screen").style.display = "none";
     document.getElementById("app").style.display = "";
+    document.querySelector('.tab-btn[data-tab="bills"]').style.display = "";
+    switchTab("bills");
     // Render the shell (including the Add bill button) immediately, so a
     // data-fetch failure below can't leave the panel blank with no way to
     // add anything — only the list of existing bills/notes depends on the
@@ -403,6 +447,7 @@
       allNotes = allNotes.concat([newPage]);
       currentNoteIdx = allNotes.length - 1;
       renderNotepad();
+      if (decoyMode) { saveDecoyNotes(allNotes); return; }
       try {
         const res = await LBBAPI.upsertNote(newPage);
         if (res.queued) toast("Saved — will sync once back online");
@@ -414,6 +459,7 @@
       allNotes = allNotes.filter(n => n.id !== page.id);
       currentNoteIdx = Math.min(currentNoteIdx, allNotes.length - 1);
       renderNotepad();
+      if (decoyMode) { saveDecoyNotes(allNotes); return; }
       try {
         const res = await LBBAPI.deleteNotePage(page.id);
         if (res.queued) toast("Deleted — will sync once back online");
@@ -424,6 +470,7 @@
       const content = e.target.value;
       page.content = content;
       noteSaveTimer = setTimeout(async () => {
+        if (decoyMode) { saveDecoyNotes(allNotes); return; }
         try {
           const res = await LBBAPI.upsertNote({ id: page.id, pageOrder: page.pageOrder, content });
           if (res.queued) toast("Saved — will sync once back online");

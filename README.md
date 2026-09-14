@@ -42,6 +42,10 @@ Open the Pages URL on her phone in Safari (iOS) or Chrome (Android) → Share/me
 
 The passcode is required on every visit (the session token lives only in memory, never `localStorage`), and every read/write requires that token — nothing is fetchable just by knowing the Apps Script URL.
 
+### Decoy passcode
+
+Entering `dobby` instead of the real passcode opens a harmless, Bills-free view — just the Notepad (seeded with a shopping list) and Calculator. It's checked entirely client-side before any network call is made, so it never touches the real Sheet, never mints a real session, and its notes live only in that browser's `localStorage` — completely separate from the real notepad's pages. Useful if someone insists on seeing what's behind the passcode.
+
 ### Working offline
 
 Adding/editing/deleting a bill or a notepad page works with no signal. Each is identified by an id generated on the phone itself (not by the server), so a change made offline queues in `localStorage` and replays automatically once back online (checked on reconnect, and every 30s while anything's queued) — no data is lost, and nothing needs to be redone. A yellow bar under the header shows how many changes are waiting to sync. Bill photos are included in the queued write itself, so a handful of queued photos is fine, but this isn't meant for a large backlog — `localStorage` has only a few MB to work with per browser.
