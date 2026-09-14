@@ -8,6 +8,14 @@
    Everything (including reads) requires a session token minted by login().
    The token lives only in memory here — never persisted — so a fresh page
    load always starts logged out, as required.
+
+   Offline queue: every mutation (saveBill/deleteBill/upsertNote/
+   deleteNotePage) is id-addressed with a client-generated id (see uuid()
+   below), so a write made with no signal can be queued in localStorage and
+   replayed later under that same id — no server round trip is needed just
+   to mint an id before the UI can show something. AppsScript.gs's saveBill/
+   upsertNote both honor a client-supplied id for creates as well as
+   updates, which is what makes this safe to replay without reconciliation.
    ============================================================================ */
 
 (function () {
@@ -19,7 +27,15 @@
 
   let sessionToken = null;
 
-  async function call(action, payload) {
+  function uuid() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+      const r = (Math.random() * 16) | 0, v = c === "x" ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+
+  async function rawCall(action, payload) {
     const res = await fetch(CFG.APPS_SCRIPT_URL, {
       method: "POST",
       body: JSON.stringify(Object.assign({ action, token: sessionToken }, payload))
@@ -29,9 +45,73 @@
     return data;
   }
 
+  // ── Offline queue ──────────────────────────────────────────────────────────
+  const QUEUE_KEY = "lbb_queue_v1";
+  let queue = [];
+  let flushing = false;
+  let onQueueChange = null;
+  function loadQueue() { try { queue = JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]"); } catch (e) { queue = []; } }
+  function saveQueue() { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(queue)); } catch (e) {} }
+  function notifyQueue() { if (onQueueChange) onQueueChange(queue.length); }
+  loadQueue();
+
+  function isOfflineError(err) {
+    // fetch() rejects with a generic TypeError when there's no network at
+    // all (as opposed to the server responding with an error, which throws
+    // a normal Error above after a successful round trip) — that's the only
+    // case that should get queued rather than surfaced immediately.
+    return err instanceof TypeError;
+  }
+
+  // action/payload here are exactly what a later flush will replay — kept
+  // as plain data (no functions/dates) so JSON.stringify round-trips it.
+  async function callOrQueue(action, payload) {
+    try {
+      return await rawCall(action, payload);
+    } catch (err) {
+      if (!isOfflineError(err)) throw err;
+      queue.push({ qid: uuid(), action, payload, ts: Date.now() });
+      saveQueue();
+      notifyQueue();
+      scheduleFlush();
+      return { ok: true, queued: true };
+    }
+  }
+
+  async function flushQueue() {
+    if (flushing || !queue.length || !sessionToken) return;
+    flushing = true;
+    let i = 0;
+    for (; i < queue.length; i++) {
+      const item = queue[i];
+      let data;
+      try {
+        data = await rawCall(item.action, item.payload);
+      } catch (err) {
+        if (isOfflineError(err)) break; // still offline — this and the rest stay queued
+        break; // e.g. session expired mid-queue — stop and retry the whole batch after next login
+      }
+      if (!data.ok) break;
+    }
+    queue = queue.slice(i);
+    saveQueue();
+    notifyQueue();
+    flushing = false;
+  }
+
+  let flushTimer = null;
+  function scheduleFlush() {
+    clearTimeout(flushTimer);
+    flushTimer = setTimeout(flushQueue, 1500);
+  }
+  window.addEventListener("online", () => flushQueue());
+  setInterval(() => { if (queue.length) flushQueue(); }, 30000);
+
+  // ── Auth ──────────────────────────────────────────────────────────────────
   async function login(passcode) {
-    const data = await call("login", { passcode });
+    const data = await rawCall("login", { passcode });
     sessionToken = data.token;
+    flushQueue();
     return true;
   }
   function isLoggedIn() { return !!sessionToken; }
@@ -62,27 +142,32 @@
     });
   }
 
-  async function listBills() { return (await call("listBills", {})).bills; }
+  async function listBills() { return (await rawCall("listBills", {})).bills; }
+  // bill.id is always set by the caller (core.js mints it via LBBAPI.newId()
+  // for a brand-new bill) before this is called, so an offline create and an
+  // offline edit look identical to the queue.
   async function saveBill(bill, photoFile) {
     let photo = null;
     if (photoFile) photo = await downscalePhoto(photoFile);
-    return call("saveBill", {
+    return callOrQueue("saveBill", {
       bill: Object.assign({}, bill, {
         photoBase64: photo ? photo.base64 : null,
         photoMimeType: photo ? photo.mimeType : null
       })
     });
   }
-  async function deleteBill(id) { return call("deleteBill", { id }); }
+  async function deleteBill(id) { return callOrQueue("deleteBill", { id }); }
 
-  async function listNotes() { return (await call("listNotes", {})).notes; }
-  async function saveNotePage(id, content) { return call("saveNotePage", { id, content }); }
-  async function addNotePage() { return (await call("addNotePage", {})).id; }
-  async function deleteNotePage(id) { return call("deleteNotePage", { id }); }
+  async function listNotes() { return (await rawCall("listNotes", {})).notes; }
+  async function upsertNote(note) { return callOrQueue("upsertNote", { note }); }
+  async function deleteNotePage(id) { return callOrQueue("deleteNotePage", { id }); }
 
   window.LBBAPI = {
-    login, isLoggedIn, logout,
+    login, isLoggedIn, logout, newId: uuid,
     listBills, saveBill, deleteBill,
-    listNotes, saveNotePage, addNotePage, deleteNotePage
+    listNotes, upsertNote, deleteNotePage,
+    getQueueLength: () => queue.length,
+    onQueueChange: cb => { onQueueChange = cb; },
+    flushQueue
   };
 })();

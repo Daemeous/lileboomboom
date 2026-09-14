@@ -87,8 +87,7 @@ function route(body) {
     case "saveBill":      return { bill: saveBill(body.bill) };
     case "deleteBill":    return deleteBill(body.id);
     case "listNotes":     return { notes: listNotes() };
-    case "saveNotePage":  return saveNotePage(body.id, body.content);
-    case "addNotePage":   return { id: addNotePage() };
+    case "upsertNote":    return upsertNote(body.note);
     case "deleteNotePage": return deleteNotePage(body.id);
     default: throw new Error("Unknown action.");
   }
@@ -115,21 +114,24 @@ function listBills() {
     status: r[5], notes: r[6], photoUrl: r[7], updated: r[8]
   }));
 }
+// Honors a client-supplied id for BOTH update and create. This matters for
+// the offline queue (see api.js): the client mints the id the moment a bill
+// is created, whether or not it's online at that instant, so a queued
+// create that syncs later lands under the same id the UI has already been
+// showing — no reconciliation step needed after a delayed sync.
 function saveBill(b) {
   const sh = billsSheet();
   const rows = sh.getDataRange().getValues();
   let photoUrl = b.photoUrl || "";
   if (b.photoBase64) photoUrl = uploadPhoto(b.photoBase64, b.photoMimeType || "image/jpeg");
   const now = new Date().toISOString();
-  if (b.id) {
-    for (let i = 1; i < rows.length; i++) {
-      if (rows[i][0] === b.id) {
-        sh.getRange(i + 1, 1, 1, 9).setValues([[b.id, b.name, b.amount, b.dueDay, b.priority, b.status, b.notes || "", photoUrl, now]]);
-        return { id: b.id, photoUrl: photoUrl };
-      }
+  const id = b.id || Utilities.getUuid();
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][0] === id) {
+      sh.getRange(i + 1, 1, 1, 9).setValues([[id, b.name, b.amount, b.dueDay, b.priority, b.status, b.notes || "", photoUrl, now]]);
+      return { id: id, photoUrl: photoUrl };
     }
   }
-  const id = Utilities.getUuid();
   sh.appendRow([id, b.name, b.amount, b.dueDay, b.priority, b.status, b.notes || "", photoUrl, now]);
   return { id: id, photoUrl: photoUrl };
 }
@@ -167,25 +169,23 @@ function listNotes() {
     .map(r => ({ id: r[0], pageOrder: r[1], content: r[2], updated: r[3] }))
     .sort((a, b) => a.pageOrder - b.pageOrder);
 }
-function saveNotePage(id, content) {
+// Upsert, same client-id-wins reasoning as saveBill: the client mints a
+// page's id (and its pageOrder) when it creates the page, online or not, so
+// a page created offline and synced later keeps the id the UI already used.
+function upsertNote(n) {
   const sh = notesSheet();
   const rows = sh.getDataRange().getValues();
+  const now = new Date().toISOString();
   for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === id) {
-      sh.getRange(i + 1, 3).setValue(content);
-      sh.getRange(i + 1, 4).setValue(new Date().toISOString());
-      return {};
+    if (rows[i][0] === n.id) {
+      sh.getRange(i + 1, 3).setValue(n.content || "");
+      sh.getRange(i + 1, 4).setValue(now);
+      return { id: n.id };
     }
   }
-  throw new Error("Page not found.");
-}
-function addNotePage() {
-  const sh = notesSheet();
-  const rows = sh.getDataRange().getValues();
   const maxOrder = rows.slice(1).reduce((m, r) => Math.max(m, Number(r[1]) || 0), 0);
-  const id = Utilities.getUuid();
-  sh.appendRow([id, maxOrder + 1, "", new Date().toISOString()]);
-  return id;
+  sh.appendRow([n.id, n.pageOrder || (maxOrder + 1), n.content || "", now]);
+  return { id: n.id };
 }
 function deleteNotePage(id) {
   const sh = notesSheet();

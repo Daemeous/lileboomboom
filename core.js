@@ -93,6 +93,7 @@
       </div>
       <button id="logout-btn">Log out</button>
     </header>
+    <div id="queue-note" style="display:none;"></div>
     <main id="panels">
       <section id="panel-bills" class="panel active"></section>
       <section id="panel-notepad" class="panel"></section>
@@ -109,6 +110,22 @@
     document.getElementById("gate-form").addEventListener("submit", onGateSubmit);
     document.getElementById("logout-btn").addEventListener("click", onLogout);
     document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click", () => switchTab(btn.dataset.tab)));
+    let lastQueueLen = 0;
+    LBBAPI.onQueueChange(n => {
+      const el = document.getElementById("queue-note");
+      if (el) {
+        if (n > 0) { el.style.display = "block"; el.textContent = `📡 ${n} change${n === 1 ? "" : "s"} saved on this device — will sync once back online`; }
+        else el.style.display = "none";
+      }
+      // Queue just drained (fully or partially) — quietly re-fetch so any
+      // server-generated details (e.g. a synced photo's real Drive URL)
+      // replace the local placeholders, without disturbing what's on screen.
+      if (n < lastQueueLen && LBBAPI.isLoggedIn()) {
+        loadBills().catch(() => {});
+        loadNotes().catch(() => {});
+      }
+      lastQueueLen = n;
+    });
   }
 
   async function onGateSubmit(e) {
@@ -245,16 +262,25 @@
     card.querySelector(".edit-btn").addEventListener("click", () => openBillForm(b));
     card.querySelector(".delete-btn").addEventListener("click", async () => {
       if (!confirm(`Delete "${b.name}"?`)) return;
-      await LBBAPI.deleteBill(b.id);
-      await loadBills();
+      allBills = allBills.filter(x => x.id !== b.id);
+      renderBills();
+      try {
+        const res = await LBBAPI.deleteBill(b.id);
+        if (res.queued) toast("Deleted — will sync once back online");
+      } catch (err) { toast("Delete failed: " + err.message); }
     });
   }
 
+  // Optimistic: update the in-memory list and re-render immediately, then
+  // send the write (or queue it if offline) — no re-fetch from the network,
+  // so this keeps working with no signal.
   async function saveBillPatch(bill, patch) {
     const updated = Object.assign({}, bill, patch);
+    allBills = allBills.map(x => x.id === bill.id ? updated : x);
+    renderBills();
     try {
-      await LBBAPI.saveBill(updated);
-      await loadBills();
+      const res = await LBBAPI.saveBill(updated);
+      if (res.queued) toast("Saved — will sync once back online");
     } catch (err) { toast("Save failed: " + err.message); }
   }
 
@@ -316,20 +342,36 @@
       if (!name) { msg.textContent = "Name is required."; return; }
       const fileInput = overlay.querySelector("#f-photo");
       const photoFile = pastedFile || fileInput.files[0] || null;
-      msg.textContent = "Saving…";
+
+      // Optimistic: id is minted client-side (new bill) or reused (edit), so
+      // the card appears right away and the write can be queued offline
+      // under that same id with no server round trip needed first.
+      const id = bill ? bill.id : LBBAPI.newId();
+      const status = bill ? bill.status : "Unpaid";
+      const localPhotoUrl = photoFile ? URL.createObjectURL(photoFile) : (bill ? bill.photoUrl : "");
+      const optimistic = { id, name, amount, dueDay, priority, notes, status, photoUrl: localPhotoUrl };
+      allBills = bill ? allBills.map(x => x.id === id ? optimistic : x) : allBills.concat([optimistic]);
+      overlay.remove();
+      renderBills();
+
       try {
-        const payload = Object.assign({}, bill, { name, amount, dueDay, priority, notes });
-        await LBBAPI.saveBill(payload, photoFile);
-        overlay.remove();
-        await loadBills();
-      } catch (err) { msg.textContent = "Save failed: " + err.message; }
+        const payload = Object.assign({}, optimistic, { photoUrl: bill ? bill.photoUrl : "" });
+        const res = await LBBAPI.saveBill(payload, photoFile);
+        if (res.queued) toast("Saved — will sync once back online");
+        else if (res.bill && res.bill.photoUrl) {
+          allBills = allBills.map(x => x.id === id ? Object.assign({}, x, { photoUrl: res.bill.photoUrl }) : x);
+          renderBills();
+        }
+      } catch (err) { toast("Save failed: " + err.message); }
     });
   }
 
   // ── Notepad ───────────────────────────────────────────────────────────────
   async function loadNotes() {
+    const currentId = allNotes[currentNoteIdx] ? allNotes[currentNoteIdx].id : null;
     allNotes = await LBBAPI.listNotes();
-    currentNoteIdx = 0;
+    const restoredIdx = currentId ? allNotes.findIndex(n => n.id === currentId) : -1;
+    currentNoteIdx = restoredIdx >= 0 ? restoredIdx : 0;
     renderNotepad();
   }
 
@@ -354,23 +396,38 @@
     document.getElementById("note-prev").addEventListener("click", () => { currentNoteIdx--; renderNotepad(); });
     document.getElementById("note-next").addEventListener("click", () => { currentNoteIdx++; renderNotepad(); });
     document.getElementById("note-new").addEventListener("click", async () => {
-      const id = await LBBAPI.addNotePage();
-      await loadNotes();
-      currentNoteIdx = allNotes.findIndex(n => n.id === id);
+      // Optimistic + client-minted id, same reasoning as bills: the new page
+      // shows up immediately and can be queued offline under this id.
+      const maxOrder = allNotes.reduce((m, n) => Math.max(m, n.pageOrder || 0), 0);
+      const newPage = { id: LBBAPI.newId(), pageOrder: maxOrder + 1, content: "" };
+      allNotes = allNotes.concat([newPage]);
+      currentNoteIdx = allNotes.length - 1;
       renderNotepad();
+      try {
+        const res = await LBBAPI.upsertNote(newPage);
+        if (res.queued) toast("Saved — will sync once back online");
+      } catch (err) { toast("Save failed: " + err.message); }
     });
     document.getElementById("note-delete").addEventListener("click", async () => {
       if (allNotes.length <= 1) { toast("Can't delete the only page."); return; }
       if (!confirm("Delete this page?")) return;
-      await LBBAPI.deleteNotePage(page.id);
-      await loadNotes();
+      allNotes = allNotes.filter(n => n.id !== page.id);
+      currentNoteIdx = Math.min(currentNoteIdx, allNotes.length - 1);
+      renderNotepad();
+      try {
+        const res = await LBBAPI.deleteNotePage(page.id);
+        if (res.queued) toast("Deleted — will sync once back online");
+      } catch (err) { toast("Delete failed: " + err.message); }
     });
     document.getElementById("note-text").addEventListener("input", e => {
       clearTimeout(noteSaveTimer);
       const content = e.target.value;
+      page.content = content;
       noteSaveTimer = setTimeout(async () => {
-        try { await LBBAPI.saveNotePage(page.id, content); page.content = content; }
-        catch (err) { toast("Save failed: " + err.message); }
+        try {
+          const res = await LBBAPI.upsertNote({ id: page.id, pageOrder: page.pageOrder, content });
+          if (res.queued) toast("Saved — will sync once back online");
+        } catch (err) { toast("Save failed: " + err.message); }
       }, 800);
     });
   }
