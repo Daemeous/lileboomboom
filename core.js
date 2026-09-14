@@ -120,13 +120,20 @@
     msg.textContent = "";
     try {
       await LBBAPI.login(code);
-      document.getElementById("gate-screen").style.display = "none";
-      document.getElementById("app").style.display = "";
-      await Promise.all([loadBills(), loadNotes()]);
     } catch (err) {
       msg.textContent = "Try again.";
       input.focus();
+      return;
     }
+    document.getElementById("gate-screen").style.display = "none";
+    document.getElementById("app").style.display = "";
+    // Render the shell (including the Add bill button) immediately, so a
+    // data-fetch failure below can't leave the panel blank with no way to
+    // add anything — only the list of existing bills/notes depends on the
+    // fetch succeeding.
+    renderBills();
+    try { await loadBills(); } catch (err) { toast("Couldn't load bills: " + err.message); }
+    try { await loadNotes(); } catch (err) { toast("Couldn't load notes: " + err.message); }
   }
 
   function onLogout() {
