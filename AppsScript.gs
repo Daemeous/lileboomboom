@@ -34,13 +34,19 @@ const NOTES_SHEET = "Notes";
 
 function setPasscode() {
   if (!PLAINTEXT_PASSCODE) throw new Error("Set PLAINTEXT_PASSCODE first, run this, then clear it.");
-  PropertiesService.getScriptProperties().setProperty("PASSCODE_HASH", sha256(PLAINTEXT_PASSCODE));
+  PropertiesService.getScriptProperties().setProperty("PASSCODE_HASH", sha256(normalizePasscode(PLAINTEXT_PASSCODE)));
   Logger.log("Passcode stored. Clear PLAINTEXT_PASSCODE now and save.");
 }
 
 function sha256(text) {
   const raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, text, Utilities.Charset.UTF_8);
   return raw.map(b => (b < 0 ? b + 256 : b).toString(16).padStart(2, "0")).join("");
+}
+
+// Lowercases and strips everything but letters/digits, so "Godric's Hollow",
+// "GodricsHollow" and "Godrics Hollow" all normalize to the same passcode.
+function normalizePasscode(text) {
+  return String(text || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function getSS() { return SpreadsheetApp.getActiveSpreadsheet(); }
@@ -91,7 +97,7 @@ function route(body) {
 // ── Auth ──────────────────────────────────────────────────────────────────
 function login(passcode) {
   const expected = PropertiesService.getScriptProperties().getProperty("PASSCODE_HASH");
-  if (!expected || sha256(passcode || "") !== expected) throw new Error("Incorrect code.");
+  if (!expected || sha256(normalizePasscode(passcode)) !== expected) throw new Error("Incorrect code.");
   const token = Utilities.getUuid();
   CacheService.getScriptCache().put("tok_" + token, "1", SESSION_HOURS * 3600);
   return { token: token };

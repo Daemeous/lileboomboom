@@ -10,7 +10,7 @@ Deliberately named and iconed to not look like a finance app — nothing in the 
 1. Open the Google Sheet this app uses, then **Extensions → Apps Script**.
 2. Paste the contents of [`AppsScript.gs`](AppsScript.gs) in as `Code.gs`.
 3. Temporarily set `PLAINTEXT_PASSCODE` at the top to the real passcode.
-4. Run the `setPasscode` function once (Run menu → `setPasscode`, grant the permissions it asks for). This stores a hash of the passcode in Script Properties — the plaintext is never saved anywhere.
+4. Run the `setPasscode` function once (Run menu → `setPasscode`, grant the permissions it asks for). This stores a hash of the passcode in Script Properties — the plaintext is never saved anywhere. The passcode is normalized before hashing (lowercased, spaces/punctuation stripped), and the login screen normalizes the same way, so `godrickshollow`, `Godric's Hollow`, `GodricsHollow` and `Godrics Hollow` are all treated as the same passcode.
 5. Clear `PLAINTEXT_PASSCODE` back to `""` and save. **Never commit a real passcode to this repo** — it's public (GitHub Pages requires that for a free site), so anything committed is world-readable. `AppsScript.gs` in this repo is a template only; the live copy with your passcode set lives solely inside the Apps Script project, which is separate from GitHub.
 6. **Deploy → New deployment → Web app**:
    - Execute as: **Me**
