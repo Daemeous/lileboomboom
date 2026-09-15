@@ -74,6 +74,8 @@ button, input, select, textarea { font-family: inherit; font-size: 1rem; }
   background: #14151b; border: 1px solid #2a2c38; color: #e8e8ec;
   border-radius: 6px; padding: 5px 8px; cursor: pointer;
 }
+.recurring-label { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #9a9ba8; cursor: pointer; }
+.recurring-label input[type="checkbox"] { width: auto; accent-color: #4f8ef7; }
 .bill-notes { font-size: 0.85rem; color: #b8b9c4; margin-bottom: 8px; white-space: pre-wrap; }
 .bill-photo { max-width: 100%; border-radius: 8px; margin-bottom: 8px; display: block; }
 .bill-actions { display: flex; gap: 8px; }

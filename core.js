@@ -231,8 +231,27 @@
     return candidate;
   }
 
+  function monthKey(date) { return date.getFullYear() + "-" + date.getMonth(); }
+
+  // A recurring bill just needs to come back as Unpaid once a new calendar
+  // month starts — no new row, no cron job. cycleKey remembers which month
+  // it was last rolled over for, stamped the first time the app is opened
+  // in a new month (so this only fires while she has the phone in hand —
+  // there's no server-side scheduler here).
+  async function rolloverRecurringBills() {
+    const key = monthKey(new Date());
+    const due = allBills.filter(b => b.recurring && b.cycleKey !== key);
+    for (const b of due) {
+      const wasPaid = (b.status || "Unpaid") === "Paid";
+      const updated = Object.assign({}, b, { cycleKey: key }, wasPaid ? { status: "Unpaid" } : {});
+      allBills = allBills.map(x => x.id === b.id ? updated : x);
+      try { await LBBAPI.saveBill(updated); } catch (e) { /* will retry next open */ }
+    }
+  }
+
   async function loadBills() {
     allBills = await LBBAPI.listBills();
+    await rolloverRecurringBills();
     renderBills();
   }
 
@@ -272,13 +291,14 @@
     return `
     <div class="bill-card ${paid ? "paid" : ""}" data-id="${escHtml(b.id)}" style="border-left-color:${priorityColour(b.priority)}">
       <div class="bill-head">
-        <span class="bill-name">${escHtml(b.name)}</span>
+        <span class="bill-name">${b.recurring ? "🔁 " : ""}${escHtml(b.name)}</span>
         <span class="bill-amount">${money(b.amount)}</span>
       </div>
       <div class="bill-meta">
         <label>Due day <input type="number" min="1" max="31" class="due-day-input" value="${escHtml(b.dueDay)}"></label>
         <select class="priority-select">${PRIORITIES.map(p => `<option value="${p.key}" ${p.key === b.priority ? "selected" : ""}>${p.key}</option>`).join("")}</select>
         <button class="status-toggle-btn">${paid ? "Paid ✓" : "Mark paid"}</button>
+        <label class="recurring-label"><input type="checkbox" class="recurring-checkbox" ${b.recurring ? "checked" : ""}> Recurring</label>
       </div>
       ${b.notes ? `<div class="bill-notes">${escHtml(b.notes)}</div>` : ""}
       ${b.photoUrl ? `<img class="bill-photo" src="${escHtml(b.photoUrl)}" alt="">` : ""}
@@ -302,6 +322,9 @@
     card.querySelector(".status-toggle-btn").addEventListener("click", async () => {
       const status = (b.status || "Unpaid") === "Paid" ? "Unpaid" : "Paid";
       await saveBillPatch(b, { status });
+    });
+    card.querySelector(".recurring-checkbox").addEventListener("change", async e => {
+      await saveBillPatch(b, { recurring: e.target.checked, cycleKey: monthKey(new Date()) });
     });
     card.querySelector(".edit-btn").addEventListener("click", () => openBillForm(b));
     card.querySelector(".delete-btn").addEventListener("click", async () => {
@@ -345,6 +368,7 @@
           <select id="f-priority">${PRIORITIES.map(p => `<option value="${p.key}" ${bill && bill.priority === p.key ? "selected" : ""}>${p.key}</option>`).join("")}</select>
           <label class="form-label">Notes</label>
           <textarea id="f-notes" rows="3">${bill ? escHtml(bill.notes) : ""}</textarea>
+          <label class="recurring-label" style="margin-top:8px;"><input type="checkbox" id="f-recurring" ${bill && bill.recurring ? "checked" : ""}> Recurring monthly (comes back as unpaid on the same due day each month)</label>
           <label class="form-label">Photo (upload, or paste one anywhere in this box)</label>
           <input type="file" id="f-photo" accept="image/*">
           <img id="f-photo-preview" style="display:none;">
@@ -382,6 +406,7 @@
       const dueDay = Math.max(1, Math.min(31, Number(overlay.querySelector("#f-dueday").value) || 29));
       const priority = overlay.querySelector("#f-priority").value;
       const notes = overlay.querySelector("#f-notes").value.trim();
+      const recurring = overlay.querySelector("#f-recurring").checked;
       const msg = overlay.querySelector("#f-msg");
       if (!name) { msg.textContent = "Name is required."; return; }
       const fileInput = overlay.querySelector("#f-photo");
@@ -392,8 +417,9 @@
       // under that same id with no server round trip needed first.
       const id = bill ? bill.id : LBBAPI.newId();
       const status = bill ? bill.status : "Unpaid";
+      const cycleKey = bill ? bill.cycleKey : monthKey(new Date());
       const localPhotoUrl = photoFile ? URL.createObjectURL(photoFile) : (bill ? bill.photoUrl : "");
-      const optimistic = { id, name, amount, dueDay, priority, notes, status, photoUrl: localPhotoUrl };
+      const optimistic = { id, name, amount, dueDay, priority, notes, status, recurring, cycleKey, photoUrl: localPhotoUrl };
       allBills = bill ? allBills.map(x => x.id === id ? optimistic : x) : allBills.concat([optimistic]);
       overlay.remove();
       renderBills();

@@ -55,7 +55,7 @@ function ensureSheets() {
   const ss = getSS();
   if (!ss.getSheetByName(BILLS_SHEET)) {
     const sh = ss.insertSheet(BILLS_SHEET);
-    sh.appendRow(["id", "name", "amount", "due_day", "priority", "status", "notes", "photo_url", "updated"]);
+    sh.appendRow(["id", "name", "amount", "due_day", "priority", "status", "notes", "photo_url", "updated", "recurring", "cycle_key"]);
   }
   if (!ss.getSheetByName(NOTES_SHEET)) {
     const sh = ss.insertSheet(NOTES_SHEET);
@@ -111,7 +111,8 @@ function listBills() {
   const rows = billsSheet().getDataRange().getValues();
   return rows.slice(1).filter(r => r[0]).map(r => ({
     id: r[0], name: r[1], amount: r[2], dueDay: r[3], priority: r[4],
-    status: r[5], notes: r[6], photoUrl: r[7], updated: r[8]
+    status: r[5], notes: r[6], photoUrl: r[7], updated: r[8],
+    recurring: r[9] === true, cycleKey: r[10] || ""
   }));
 }
 // Honors a client-supplied id for BOTH update and create. This matters for
@@ -126,13 +127,15 @@ function saveBill(b) {
   if (b.photoBase64) photoUrl = uploadPhoto(b.photoBase64, b.photoMimeType || "image/jpeg");
   const now = new Date().toISOString();
   const id = b.id || Utilities.getUuid();
+  const recurring = !!b.recurring;
+  const cycleKey = b.cycleKey || "";
   for (let i = 1; i < rows.length; i++) {
     if (rows[i][0] === id) {
-      sh.getRange(i + 1, 1, 1, 9).setValues([[id, b.name, b.amount, b.dueDay, b.priority, b.status, b.notes || "", photoUrl, now]]);
+      sh.getRange(i + 1, 1, 1, 11).setValues([[id, b.name, b.amount, b.dueDay, b.priority, b.status, b.notes || "", photoUrl, now, recurring, cycleKey]]);
       return { id: id, photoUrl: photoUrl };
     }
   }
-  sh.appendRow([id, b.name, b.amount, b.dueDay, b.priority, b.status, b.notes || "", photoUrl, now]);
+  sh.appendRow([id, b.name, b.amount, b.dueDay, b.priority, b.status, b.notes || "", photoUrl, now, recurring, cycleKey]);
   return { id: id, photoUrl: photoUrl };
 }
 function deleteBill(id) {

@@ -46,15 +46,21 @@ The passcode is required on every visit (the session token lives only in memory,
 
 Entering `dobby` instead of the real passcode opens a harmless, Bills-free view — just the Notepad (seeded with a shopping list) and Calculator. It's checked entirely client-side before any network call is made, so it never touches the real Sheet, never mints a real session, and its notes live only in that browser's `localStorage` — completely separate from the real notepad's pages. Useful if someone insists on seeing what's behind the passcode.
 
+### Recurring bills
+
+Ticking "Recurring monthly" on a bill (in the add/edit form, or the checkbox on its card) means it comes back as Unpaid automatically at the start of each calendar month — no need to re-add it, and no new row gets created each month, so the list doesn't grow forever. This check runs on the phone whenever the app is opened (there's no server-side scheduler here), so it takes effect the next time the app is opened after the month rolls over, not at the exact stroke of midnight.
+
 ### Working offline
 
 Adding/editing/deleting a bill or a notepad page works with no signal. Each is identified by an id generated on the phone itself (not by the server), so a change made offline queues in `localStorage` and replays automatically once back online (checked on reconnect, and every 30s while anything's queued) — no data is lost, and nothing needs to be redone. A yellow bar under the header shows how many changes are waiting to sync. Bill photos are included in the queued write itself, so a handful of queued photos is fine, but this isn't meant for a large backlog — `localStorage` has only a few MB to work with per browser.
 
-⚠️ If you already deployed an earlier version of `AppsScript.gs` (one with separate `saveNotePage`/`addNotePage` actions instead of `upsertNote`, or a `saveBill` that always generated its own id for new rows), **redeploy it** — this version changed the API shape and older deployed code won't match `api.js` anymore. Apps Script deployments don't auto-update from GitHub, so: paste the current `AppsScript.gs` back into the Apps Script editor's `Code.gs`, then **Deploy → Manage deployments → Edit (pencil) → Version: New version → Deploy**. This keeps the same `/exec` URL, so `index.html` doesn't need to change.
+⚠️ **Redeploy `AppsScript.gs` again after this update** (same steps as below) — `saveBill` now writes two extra columns (`recurring`, `cycle_key`), and a currently-deployed older version won't accept them. Existing bill rows don't need any manual editing; the new columns just start getting used the next time each bill is saved.
+
+**Redeploy steps** (also needed whenever `AppsScript.gs` changes going forward): paste the current `AppsScript.gs` into the Apps Script editor's `Code.gs`, then **Deploy → Manage deployments → Edit (pencil) → Version: New version → Deploy**. This keeps the same `/exec` URL, so `index.html` doesn't need to change. Apps Script deployments don't auto-update from GitHub — this step is always manual.
 
 ## Data model (Google Sheet tabs, auto-created on first request)
 
-- **Bills**: `id, name, amount, due_day, priority (High/Medium/Low), status (Paid/Unpaid), notes, photo_url, updated`
+- **Bills**: `id, name, amount, due_day, priority (High/Medium/Low), status (Paid/Unpaid), notes, photo_url, updated, recurring, cycle_key`
 - **Notes**: `id, page_order, content, updated`
 
 Photos are uploaded via the Apps Script to a Drive folder (`lileboomboom-photos`, created automatically) and linked by URL.
