@@ -141,9 +141,23 @@
   </div>`;
   }
 
+  // Purely informational — the sw.js network-first fetch is what actually
+  // guarantees fresh code; this just surfaces a quiet confirmation when it
+  // notices this load is a newer APP_VERSION than the one last recorded on
+  // this device (and says nothing on a first-ever install, or a repeat
+  // visit on the same version).
+  function checkAppVersion() {
+    if (!CFG.VERSION) return;
+    let last;
+    try { last = localStorage.getItem("lbb_app_version"); } catch (e) { return; }
+    try { localStorage.setItem("lbb_app_version", CFG.VERSION); } catch (e) {}
+    if (last && last !== CFG.VERSION) setTimeout(() => toast("Updated to the latest version"), 500);
+  }
+
   function boot() {
     document.body.innerHTML = appShellHtml();
     injectPwaHead();
+    checkAppVersion();
 
     document.getElementById("gate-form").addEventListener("submit", onGateSubmit);
     document.getElementById("logout-btn").addEventListener("click", onLogout);

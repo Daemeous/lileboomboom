@@ -4,7 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>lileboomboom</title>
-<link rel="stylesheet" href="styles.css?v=1">
+<!--
+  APP_VERSION below and in sw.js must be bumped together on every deploy
+  that changes api.js/core.js/styles.css. This is the version-check the
+  service worker compares against: a version bump gives every asset a new
+  URL (so no layer of caching — browser HTTP cache included — can serve
+  stale bytes for it) and gives the offline cache a new name (so the old
+  one is dropped once she next has signal), rather than relying on a
+  cache guessing whether its contents are still current.
+-->
+<link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
 <script>
@@ -13,10 +22,11 @@ window.LBB_CONFIG = {
   // Paste the /exec URL from the Apps Script deployment here (see AppsScript.gs
   // for the one-time setup steps — passcode, Sheet tabs, web app deploy).
   APPS_SCRIPT_URL: "https://script.google.com/macros/s/AKfycbyrxiE29Zs-CDNY8PdOdlNfHd242YlEPS0GHJ1mBmMQMEq_LiRFg-bR7-AlOVfZ_PwJlA/exec",
-  TITLE: "lileboomboom"
+  TITLE: "lileboomboom",
+  VERSION: "3"
 };
 </script>
-<script src="api.js?v=1"></script>
-<script src="core.js?v=1"></script>
+<script src="api.js?v=3"></script>
+<script src="core.js?v=3"></script>
 </body>
 </html>

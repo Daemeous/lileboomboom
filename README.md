@@ -70,6 +70,12 @@ Everything works with no signal, across as many separate app opens as needed —
 
 If she's already added the icon to her home screen from an earlier version of this app, she doesn't need to redo that step — opening it once with signal picks up all of this automatically (the service worker now always prefers the live version over its cache when online, only falling back to the cached copy when there's truly no connection).
 
+### Versioning app-code changes
+
+`index.html`'s `APP_VERSION` comment/`LBB_CONFIG.VERSION` and `sw.js`'s `VERSION` must be bumped together (same number) whenever `api.js`, `core.js`, or `styles.css` change — that's what's in the `?v=N` on their `<script>`/`<link>` tags. Bumping it gives every changed asset a new URL, which is what actually guarantees she gets the update: no cache layer (the service worker's, or the phone's browser itself) can have a stale entry sitting under a URL that no longer matches what the page asks for. It also gives the offline cache a new name, so the previous version gets dropped the next time she has signal rather than lingering. A quiet "Updated to the latest version" toast confirms it landed, the first time she opens the app after a version bump.
+
+Forgetting to bump it isn't catastrophic — the service worker's fetch handler also forces every request past the phone's own HTTP cache (`cache: "reload"`) — but bumping it is what makes an update unambiguous rather than dependent on cache behavior.
+
 ## Data model (Google Sheet tabs, auto-created on first request)
 
 - **Bills**: `id, name, amount, due_day, priority (High/Medium/Low), status (Paid/Unpaid), notes, photo_url, updated, recurring, cycle_key`
