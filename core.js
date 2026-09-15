@@ -129,6 +129,9 @@
       <button id="logout-btn">Log out</button>
     </header>
     <div id="queue-note" style="display:none;"></div>
+    <div id="reauth-note" style="display:none;">
+      📴 Unlocked offline — <button id="reauth-btn">tap to sync once back online</button>
+    </div>
     <main id="panels">
       <section id="panel-bills" class="panel active"></section>
       <section id="panel-notepad" class="panel"></section>
@@ -144,7 +147,12 @@
 
     document.getElementById("gate-form").addEventListener("submit", onGateSubmit);
     document.getElementById("logout-btn").addEventListener("click", onLogout);
+    document.getElementById("reauth-btn").addEventListener("click", openReauthPrompt);
     document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click", () => switchTab(btn.dataset.tab)));
+    // Connectivity came back while she's still in an offline session — she
+    // still has to retype the passcode (nothing was stored that could do it
+    // for her), but nudge her rather than leaving it to chance.
+    window.addEventListener("online", () => { if (LBBAPI.needsReauth()) toast("Back online — tap the bar above to sync"); });
     let lastQueueLen = 0;
     LBBAPI.onQueueChange(n => {
       const el = document.getElementById("queue-note");
@@ -176,10 +184,11 @@
       return;
     }
 
+    let result;
     try {
-      await LBBAPI.login(code);
+      result = await LBBAPI.login(code);
     } catch (err) {
-      msg.textContent = "Try again.";
+      msg.textContent = err.message || "Try again.";
       input.focus();
       return;
     }
@@ -193,14 +202,57 @@
     // add anything — only the list of existing bills/notes depends on the
     // fetch succeeding.
     renderBills();
+    if (result.offline) toast("Offline — showing your last synced data");
     try { await loadBills(); } catch (err) { toast("Couldn't load bills: " + err.message); }
     try { await loadNotes(); } catch (err) { toast("Couldn't load notes: " + err.message); }
+    updateReauthBar();
+  }
+
+  // ── Offline re-auth bar ───────────────────────────────────────────────────
+  // Shown only while she unlocked the app offline (see api.js's needsReauth)
+  // — writes are queuing fine, but nothing can actually reach the Sheet
+  // until she retypes the passcode once while back online.
+  function updateReauthBar() {
+    const el = document.getElementById("reauth-note");
+    if (!el) return;
+    el.style.display = LBBAPI.needsReauth() ? "block" : "none";
+  }
+  function openReauthPrompt() {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal">
+        <div class="modal-head"><h2>Back online?</h2><button class="modal-close">✕</button></div>
+        <div class="modal-body">
+          <label class="form-label">Enter the code again to sync</label>
+          <input type="password" id="reauth-input" autocomplete="off">
+          <div id="reauth-msg" class="form-msg"></div>
+          <button id="reauth-submit" class="add-btn">Sync now</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector(".modal-close").addEventListener("click", () => overlay.remove());
+    overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector("#reauth-submit").addEventListener("click", async () => {
+      const code = overlay.querySelector("#reauth-input").value;
+      const msgEl = overlay.querySelector("#reauth-msg");
+      try {
+        const result = await LBBAPI.login(code);
+        if (result.offline) { msgEl.textContent = "Still offline — try again once connected."; return; }
+        overlay.remove();
+        updateReauthBar();
+        toast("Synced");
+        await loadBills().catch(() => {});
+        await loadNotes().catch(() => {});
+      } catch (err) { msgEl.textContent = err.message || "Try again."; }
+    });
   }
 
   function onLogout() {
     LBBAPI.logout();
     document.getElementById("app").style.display = "none";
     document.getElementById("gate-screen").style.display = "";
+    document.getElementById("reauth-note").style.display = "none";
     document.getElementById("gate-input").focus();
   }
 

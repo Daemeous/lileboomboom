@@ -5,9 +5,21 @@
    builds a request payload itself — this split means the backend can be
    swapped later without touching core.js.
 
-   Everything (including reads) requires a session token minted by login().
-   The token lives only in memory here — never persisted — so a fresh page
-   load always starts logged out, as required.
+   A real session token is only ever minted by the server and only ever
+   lives in memory — never persisted — so a fresh page load always starts
+   logged out, and every read/write while online is checked against the
+   real passcode every time, as required.
+
+   Offline login: a passcode typed with no signal at all can't be checked
+   by the server, so after every successful ONLINE login this also stores
+   a local hash of the passcode (never the passcode itself) in localStorage.
+   Typing the same passcode again with no signal is verified against that
+   hash instead, unlocking an "offline session" — read from cache, queue
+   writes — with no real token, so writes stay queued until she's back
+   online and re-enters the passcode once to get a genuine token. This is
+   a deliberately weaker check than the real one (a copy of the hash sits
+   on the phone), acceptable here because the phone itself, not just a
+   glance at it, would have to be gotten into to make use of it.
 
    Offline queue: every mutation (saveBill/deleteBill/upsertNote/
    deleteNotePage) is id-addressed with a client-generated id (see uuid()
@@ -16,6 +28,11 @@
    to mint an id before the UI can show something. AppsScript.gs's saveBill/
    upsertNote both honor a client-supplied id for creates as well as
    updates, which is what makes this safe to replay without reconciliation.
+
+   Offline reads: the last successful listBills()/listNotes() result is
+   also cached in localStorage, so reopening the app with no signal at all
+   (a fresh page load, not just a backgrounded tab) still shows the bills
+   and notes as of the last sync, instead of an empty list.
    ============================================================================ */
 
 (function () {
@@ -26,6 +43,7 @@
   }
 
   let sessionToken = null;
+  let offlineSession = false; // unlocked via the local hash, no real token yet
 
   function uuid() {
     if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
@@ -108,14 +126,54 @@
   setInterval(() => { if (queue.length) flushQueue(); }, 30000);
 
   // ── Auth ──────────────────────────────────────────────────────────────────
-  async function login(passcode) {
-    const data = await rawCall("login", { passcode });
-    sessionToken = data.token;
-    flushQueue();
-    return true;
+  const OFFLINE_AUTH_KEY = "lbb_offline_auth_v1";
+  function normalizeForHash(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+  async function sha256Hex(str) {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
   }
-  function isLoggedIn() { return !!sessionToken; }
-  function logout() { sessionToken = null; }
+  function cacheOfflineAuth(passcode) {
+    sha256Hex(normalizeForHash(passcode))
+      .then(hash => { try { localStorage.setItem(OFFLINE_AUTH_KEY, hash); } catch (e) {} })
+      .catch(() => {});
+  }
+  function hasOfflineAuth() {
+    try { return !!localStorage.getItem(OFFLINE_AUTH_KEY); } catch (e) { return false; }
+  }
+  async function verifyOfflineAuth(passcode) {
+    let stored;
+    try { stored = localStorage.getItem(OFFLINE_AUTH_KEY); } catch (e) { stored = null; }
+    if (!stored) return false;
+    return (await sha256Hex(normalizeForHash(passcode))) === stored;
+  }
+
+  async function login(passcode) {
+    try {
+      const data = await rawCall("login", { passcode });
+      sessionToken = data.token;
+      offlineSession = false;
+      cacheOfflineAuth(passcode); // so the same passcode can unlock offline later
+      flushQueue();
+      return { offline: false };
+    } catch (err) {
+      if (!isOfflineError(err)) throw err; // a real "incorrect code" from the server — not a connectivity issue
+      const ok = await verifyOfflineAuth(passcode);
+      if (!ok) {
+        throw new Error(hasOfflineAuth()
+          ? "Incorrect code."
+          : "No connection, and this device hasn't saved a login yet — connect once first.");
+      }
+      sessionToken = null;
+      offlineSession = true;
+      return { offline: true };
+    }
+  }
+  function isLoggedIn() { return !!sessionToken || offlineSession; }
+  // True once she's unlocked the app offline but hasn't yet exchanged that
+  // for a real token — writes are queuing, but need her to retype the
+  // passcode once while online to actually reach the server.
+  function needsReauth() { return offlineSession && !sessionToken; }
+  function logout() { sessionToken = null; offlineSession = false; }
 
   // ── Photo downscale/compress before upload — same pattern as the pothole
   // app's api.js, keeps the Apps Script POST payload small. ─────────────────
@@ -142,7 +200,26 @@
     });
   }
 
-  async function listBills() { return (await rawCall("listBills", {})).bills; }
+  // ── Read cache ──────────────────────────────────────────────────────────
+  // Last-known-good listBills()/listNotes() results, so a fresh page load
+  // with no signal at all still shows something instead of an empty app.
+  const BILLS_CACHE_KEY = "lbb_cache_bills_v1";
+  const NOTES_CACHE_KEY = "lbb_cache_notes_v1";
+  function cacheSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {} }
+  function cacheGet(key) { try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; } catch (e) { return null; } }
+
+  async function listBills() {
+    try {
+      const data = await rawCall("listBills", {});
+      cacheSet(BILLS_CACHE_KEY, data.bills);
+      return data.bills;
+    } catch (err) {
+      if (!isOfflineError(err)) throw err;
+      const cached = cacheGet(BILLS_CACHE_KEY);
+      if (cached) return cached;
+      throw err;
+    }
+  }
   // bill.id is always set by the caller (core.js mints it via LBBAPI.newId()
   // for a brand-new bill) before this is called, so an offline create and an
   // offline edit look identical to the queue.
@@ -158,12 +235,23 @@
   }
   async function deleteBill(id) { return callOrQueue("deleteBill", { id }); }
 
-  async function listNotes() { return (await rawCall("listNotes", {})).notes; }
+  async function listNotes() {
+    try {
+      const data = await rawCall("listNotes", {});
+      cacheSet(NOTES_CACHE_KEY, data.notes);
+      return data.notes;
+    } catch (err) {
+      if (!isOfflineError(err)) throw err;
+      const cached = cacheGet(NOTES_CACHE_KEY);
+      if (cached) return cached;
+      throw err;
+    }
+  }
   async function upsertNote(note) { return callOrQueue("upsertNote", { note }); }
   async function deleteNotePage(id) { return callOrQueue("deleteNotePage", { id }); }
 
   window.LBBAPI = {
-    login, isLoggedIn, logout, newId: uuid,
+    login, isLoggedIn, needsReauth, logout, newId: uuid,
     listBills, saveBill, deleteBill,
     listNotes, upsertNote, deleteNotePage,
     getQueueLength: () => queue.length,
