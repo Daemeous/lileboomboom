@@ -304,15 +304,32 @@
   // it was last rolled over for, stamped the first time the app is opened
   // in a new month (so this only fires while she has the phone in hand —
   // there's no server-side scheduler here).
+  //
+  // ROLLOVER_ATTEMPTED_KEY guards against re-queuing the same rollover on
+  // every reopen while offline: LBBAPI.listBills() falls back to its local
+  // cache when there's no signal, and that cache only ever reflects the
+  // last successful ONLINE sync — never a queued-but-not-yet-synced write.
+  // So without this, every offline reopen would see the bill's cycleKey as
+  // still stale and queue yet another identical saveBill for it, piling up
+  // duplicate (harmless but pointless) writes in the offline queue.
+  const ROLLOVER_ATTEMPTED_KEY = "lbb_rollover_attempted_v1";
+  function loadRolloverAttempted() {
+    try { return JSON.parse(localStorage.getItem(ROLLOVER_ATTEMPTED_KEY) || "{}"); } catch (e) { return {}; }
+  }
+  function saveRolloverAttempted(obj) {
+    try { localStorage.setItem(ROLLOVER_ATTEMPTED_KEY, JSON.stringify(obj)); } catch (e) {}
+  }
   async function rolloverRecurringBills() {
     const key = monthKey(new Date());
-    const due = allBills.filter(b => b.recurring && b.cycleKey !== key);
+    const attempted = loadRolloverAttempted();
+    const due = allBills.filter(b => b.recurring && b.cycleKey !== key && !attempted[b.id + ":" + key]);
     for (const b of due) {
       const wasPaid = (b.status || "Unpaid") === "Paid";
       const updated = Object.assign({}, b, { cycleKey: key }, wasPaid ? { status: "Unpaid" } : {});
       allBills = allBills.map(x => x.id === b.id ? updated : x);
-      try { await LBBAPI.saveBill(updated); } catch (e) { /* will retry next open */ }
+      try { await LBBAPI.saveBill(updated); attempted[b.id + ":" + key] = true; } catch (e) { /* will retry next open */ }
     }
+    saveRolloverAttempted(attempted);
   }
 
   async function loadBills() {
