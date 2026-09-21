@@ -10,7 +10,7 @@
    own HTTP cache) can have a stale entry under the new URL to serve; and
    CACHE gets a new name, so activate() below drops the previous version's
    cache entirely rather than leaving it to slowly go stale. */
-const VERSION = "4";
+const VERSION = "5";
 const CACHE = "lbb-shell-v" + VERSION;
 const SHELL_FILES = ["./", "index.html", `api.js?v=${VERSION}`, `core.js?v=${VERSION}`, `styles.css?v=${VERSION}`];
 

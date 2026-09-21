@@ -53,14 +53,29 @@
     });
   }
 
-  async function rawCall(action, payload) {
-    const res = await fetch(CFG.APPS_SCRIPT_URL, {
-      method: "POST",
-      body: JSON.stringify(Object.assign({ action, token: sessionToken }, payload))
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "Request failed.");
-    return data;
+  // A failed fetch() throws the exact same generic TypeError whether there's
+  // genuinely no network or Apps Script's own serving layer just hiccuped
+  // (that happens — a dropped response there comes back with no CORS
+  // headers, which the browser also reports as a plain "failed to fetch").
+  // Every offline fallback in this file keys off that TypeError, so one
+  // short retry here filters out the transient case before anything decides
+  // "we're offline" and queues a write or falls back to cached data.
+  async function rawCall(action, payload, isRetry) {
+    try {
+      const res = await fetch(CFG.APPS_SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify(Object.assign({ action, token: sessionToken }, payload))
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Request failed.");
+      return data;
+    } catch (err) {
+      if (!isRetry && err instanceof TypeError) {
+        await new Promise(r => setTimeout(r, 1200));
+        return rawCall(action, payload, true);
+      }
+      throw err;
+    }
   }
 
   // ── Offline queue ──────────────────────────────────────────────────────────
